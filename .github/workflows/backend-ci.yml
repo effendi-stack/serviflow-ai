@@ -1,0 +1,74 @@
+name: Backend CI
+
+on:
+  push:
+    paths: ['backend/**']
+  pull_request:
+    paths: ['backend/**']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: serviflow_testing
+          POSTGRES_USER: serviflow
+          POSTGRES_PASSWORD: serviflow
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql, pgsql, redis, mbstring, zip
+
+      - name: Install Composer dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Copy .env
+        run: cp .env.example .env
+
+      - name: Generate app key
+        run: php artisan key:generate
+
+      - name: Enable pgvector extension
+        env:
+          PGPASSWORD: serviflow
+        run: psql -h 127.0.0.1 -U serviflow -d serviflow_testing -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Run migrations
+        env:
+          DB_HOST: 127.0.0.1
+          DB_DATABASE: serviflow_testing
+          DB_USERNAME: serviflow
+          DB_PASSWORD: serviflow
+        run: php artisan migrate --force
+
+      - name: Run Pest tests
+        env:
+          DB_HOST: 127.0.0.1
+          DB_DATABASE: serviflow_testing
+          DB_USERNAME: serviflow
+          DB_PASSWORD: serviflow
+        run: vendor/bin/pest
+
+      - name: Static analysis (Pint, dry run)
+        run: vendor/bin/pint --test

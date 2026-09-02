@@ -1,0 +1,913 @@
+openapi: 3.0.3
+info:
+  title: ServiFlow AI API
+  version: "1.0"
+  description: |
+    Field service management API: customer requests, AI-assisted triage,
+    technician assignment/scheduling, job execution with AI-drafted
+    reports, invoicing, and a RAG-backed knowledge assistant.
+
+    ## Authentication
+    All endpoints except `POST /auth/login` require a Laravel Sanctum
+    bearer token, obtained from `/auth/login` and sent as
+    `Authorization: Bearer <token>`. Tokens are per-user and have no
+    fixed expiry; call `POST /auth/logout` to revoke the current one.
+
+    ## Roles
+    Every user has exactly one role: `admin`, `technician`, or
+    `customer`. Most endpoints below are restricted to one or two roles
+    (see each endpoint's description) -- a request from a role that
+    isn't allowed gets a `403`. Ownership is enforced on top of role:
+    a technician only ever acts on jobs assigned to them, a customer
+    only on their own requests.
+
+    ## Response envelope
+    Every successful response wraps its payload in `{"data": ...}`;
+    paginated list endpoints add `links` and `meta` alongside `data`.
+    A `POST` that creates a new record returns `201`; everything else
+    that succeeds returns `200`.
+
+    ## Validation errors
+    A `422` response always has the shape in `ValidationError` below:
+    a `message` and a `errors` map of field name to an array of
+    messages for that field. This is Laravel's standard validation
+    error shape, used consistently across every endpoint here
+    (including business-rule rejections raised outside a FormRequest,
+    e.g. "cannot schedule from this status" -- those are surfaced the
+    same way, under whichever field is most relevant).
+
+    ## Rate limits
+    `POST /auth/login` is limited to 10 requests/minute per IP (plus a
+    5-attempts-per-account lockout independent of that). Every
+    `/knowledge/*` endpoint is limited to 30 requests/minute per user.
+
+servers:
+  - url: /api
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Service Requests
+  - name: Technicians
+  - name: Customers
+  - name: Invoices
+  - name: Knowledge Base
+  - name: Analytics
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and obtain a bearer token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user: { $ref: '#/components/schemas/User' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current token
+      responses:
+        '200': { description: Logged out }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current authenticated user
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+
+  /service-requests:
+    get:
+      tags: [Service Requests]
+      summary: List service requests
+      description: |
+        Admins see everything. Customers are scoped to their own
+        requests; technicians to jobs assigned to them. Supports
+        `?status=` and `?priority=` filters and `?per_page=`.
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: priority, in: query, schema: { type: string } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceRequestList' }
+    post:
+      tags: [Service Requests]
+      summary: Create a service request
+      description: Customer-only. Kicks off async AI triage (NEW -> ANALYZING -> READY_FOR_ASSIGNMENT).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [service_type, description]
+              properties:
+                service_type: { type: string, maxLength: 100 }
+                description: { type: string, maxLength: 2000 }
+                preferred_date: { type: string, format: date }
+                preferred_time: { type: string, example: "14:00" }
+                address: { type: string, maxLength: 255 }
+      responses:
+        '201': { $ref: '#/components/responses/ServiceRequestOne' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}:
+    get:
+      tags: [Service Requests]
+      summary: Get a service request
+      description: |
+        Full detail including AI analysis, assignment, service note,
+        invoice, status history, and review (each present only once
+        applicable). Ownership enforced per the Roles note above.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ServiceRequestOne' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /service-requests/{id}/recommended-technicians:
+    get:
+      tags: [Service Requests]
+      summary: Get AI-ranked eligible technicians for a request
+      description: |
+        Admin-facing. Eligibility (skill match, on-duty, no scheduling
+        conflict) is computed deterministically in Laravel first; the AI
+        only ranks the technicians that already passed that filter, and
+        never invents candidates outside it.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Technician' }
+
+  /service-requests/{id}/triage:
+    post:
+      tags: [Service Requests]
+      summary: Accept or override the AI's classification
+      description: |
+        Admin-only, from `ready_for_assignment` only. Whether this
+        counts as "accepted" or "overridden" is computed by diffing
+        the submitted values against the AI's original suggestion --
+        the AI's own record in `ai_analyses` is never modified.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, priority, required_skill, estimated_duration_minutes]
+              properties:
+                category: { type: string }
+                priority: { type: string, enum: [low, medium, high, critical] }
+                required_skill: { type: string }
+                estimated_duration_minutes: { type: integer, minimum: 15, maximum: 480 }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceRequestOne' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/assign:
+    post:
+      tags: [Service Requests]
+      summary: Assign a technician
+      description: Admin-only, from `ready_for_assignment`. Requires triage (required_skill set) to have happened first.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [technician_id]
+              properties:
+                technician_id: { type: integer }
+                was_ai_recommended: { type: boolean }
+                ai_score: { type: number }
+                ai_rationale: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceRequestOne' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/schedule:
+    post:
+      tags: [Service Requests]
+      summary: Confirm an appointment time
+      description: Admin-only, from `assigned`. Rejects a time that conflicts with the technician's other appointments.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scheduled_at]
+              properties:
+                scheduled_at: { type: string, format: date-time }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceRequestOne' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/start:
+    post:
+      tags: [Service Requests]
+      summary: Start a job
+      description: Assigned technician only, from `scheduled`.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ServiceRequestOne' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/notes:
+    post:
+      tags: [Service Requests]
+      summary: Record or update field notes
+      description: Assigned technician only, while `in_progress`. Locked once the report is finalized. Returns `201` the first time, `200` on later edits.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [raw_notes]
+              properties:
+                raw_notes: { type: string, maxLength: 4000 }
+                photo_paths: { type: array, items: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceNoteOne' }
+        '201': { $ref: '#/components/responses/ServiceNoteOne' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/generate-report:
+    post:
+      tags: [Service Requests]
+      summary: Generate an AI draft report from the recorded notes
+      description: Assigned technician only. Requires notes to exist first; rejected once finalized.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ServiceNoteOne' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/finalize-report:
+    post:
+      tags: [Service Requests]
+      summary: Finalize the service report
+      description: |
+        Assigned technician only. This is the human-in-the-loop
+        checkpoint: the AI draft never becomes the official record on
+        its own. One-way -- a finalized report can't be finalized
+        again, and notes can no longer be edited afterward.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [final_report]
+              properties:
+                final_report: { type: string, maxLength: 8000 }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceNoteOne' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/complete:
+    post:
+      tags: [Service Requests]
+      summary: Complete a job
+      description: Assigned technician only, from `in_progress`. Requires the report to be finalized first. Frees the technician back to `available`.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ServiceRequestOne' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/review:
+    post:
+      tags: [Service Requests]
+      summary: Submit a customer review
+      description: Owning customer only, from `completed`. One review per job; submitting it transitions COMPLETED -> REVIEWED -> CLOSED.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string, maxLength: 2000 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/Review' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/cancel:
+    post:
+      tags: [Service Requests]
+      summary: Cancel a service request
+      description: |
+        Admin, or the owning customer, from any pre-completion status.
+        Frees the assigned technician (if any) back to `available`.
+        Terminal once `completed` or later.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceRequestOne' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/invoice:
+    post:
+      tags: [Invoices]
+      summary: Create or update a draft invoice
+      description: Admin-only. Editable only while `draft` (or not yet created).
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [labor_cost, parts_cost]
+              properties:
+                labor_cost: { type: number, minimum: 0 }
+                parts_cost: { type: number, minimum: 0 }
+                line_items: { type: array, items: { type: object } }
+      responses:
+        '200': { $ref: '#/components/responses/InvoiceOne' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/invoice/issue:
+    post:
+      tags: [Invoices]
+      summary: Issue a draft invoice
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200': { $ref: '#/components/responses/InvoiceOne' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/invoice/pay:
+    post:
+      tags: [Invoices]
+      summary: Mark an issued invoice paid
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200': { $ref: '#/components/responses/InvoiceOne' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /service-requests/{id}/invoice/cancel:
+    post:
+      tags: [Invoices]
+      summary: Cancel a draft or issued invoice
+      description: A paid invoice cannot be cancelled.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200': { $ref: '#/components/responses/InvoiceOne' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /invoices:
+    get:
+      tags: [Invoices]
+      summary: Billing ledger across every job
+      description: Admin-only. Supports `?status=draft|issued|paid|cancelled` and `?per_page=`.
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Invoice' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /technicians:
+    get:
+      tags: [Technicians]
+      summary: List technicians
+      description: Supports `?skill=` and `?status=available|on_job|off_duty` filters.
+      parameters:
+        - { name: skill, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Technician' } }
+
+  /technicians/{id}:
+    get:
+      tags: [Technicians]
+      summary: Get a technician, including recent job history
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/Technician' } }
+
+  /technicians/{id}/status:
+    patch:
+      tags: [Technicians]
+      summary: Set a technician available or off duty
+      description: Admin-only. Cannot be changed while `on_job` (that transition happens automatically via job start/complete).
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [available, off_duty] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/Technician' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /customers:
+    get:
+      tags: [Customers]
+      summary: List / search customers
+      description: Admin-only. Supports `?search=` against name, email, phone.
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Customer' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /customers/{id}:
+    get:
+      tags: [Customers]
+      summary: Get a customer, including recent request history
+      description: Admin-only.
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/Customer' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /knowledge/documents:
+    get:
+      tags: [Knowledge Base]
+      summary: List uploaded knowledge base documents
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Document' } }
+    post:
+      tags: [Knowledge Base]
+      summary: Upload a PDF to the knowledge base
+      description: Admin-only. Queues async extraction, page-aware chunking, and embedding.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [title, category, file]
+              properties:
+                title: { type: string }
+                category: { type: string, enum: [manual, error_codes, sop, warranty, troubleshooting] }
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/Document' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /knowledge/documents/{id}:
+    delete:
+      tags: [Knowledge Base]
+      summary: Delete a document and its indexed chunks
+      description: Admin-only.
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        '200': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /knowledge/documents/{id}/reindex:
+    post:
+      tags: [Knowledge Base]
+      summary: Clear and re-run extraction/chunking/embedding for a document
+      description: Admin-only.
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/Document' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /knowledge/ask:
+    post:
+      tags: [Knowledge Base]
+      summary: Ask a question against the knowledge base
+      description: |
+        Retrieval-augmented: the question is embedded and matched
+        against indexed chunks (cosine similarity, top-k), and the AI
+        narrates an answer grounded in only those chunks. Every source
+        returned includes the document, page number, and excerpt it
+        came from.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      answer: { type: string }
+                      sources:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            document_id: { type: integer }
+                            document_title: { type: string }
+                            page_number: { type: integer, nullable: true }
+                            excerpt: { type: string }
+
+  /analytics/summary:
+    get:
+      tags: [Analytics]
+      summary: Job counts and status breakdown
+      description: Admin-only. Pure database aggregates -- no AI involved.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      total_jobs: { type: integer }
+                      by_status: { type: object, additionalProperties: { type: integer } }
+
+  /analytics/explain:
+    post:
+      tags: [Analytics]
+      summary: Get an AI narration of the current stats
+      description: |
+        Admin-only. The AI is handed the exact same DB-computed
+        aggregate the summary endpoint returns and asked to narrate it
+        in prose -- it never supplies its own numbers, and the `stats`
+        block in the response is always the real aggregate regardless
+        of what the AI says in `explanation`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      explanation: { type: string }
+                      stats: { type: object }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Sanctum personal access token
+
+  parameters:
+    ServiceRequestId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+
+  responses:
+    Forbidden:
+      description: The authenticated user's role or ownership doesn't permit this action
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message: { type: string, example: "This action is unauthorized." }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message: { type: string }
+    ValidationError:
+      description: Validation failed, or a business rule rejected the request (e.g. an invalid status transition)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationError' }
+    ServiceRequestOne:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { data: { $ref: '#/components/schemas/ServiceRequest' } }
+    ServiceRequestList:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { type: array, items: { $ref: '#/components/schemas/ServiceRequest' } }
+              links: { type: object }
+              meta: { type: object }
+    ServiceNoteOne:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { data: { $ref: '#/components/schemas/ServiceNote' } }
+    InvoiceOne:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { data: { $ref: '#/components/schemas/Invoice' } }
+
+  schemas:
+    ValidationError:
+      type: object
+      properties:
+        message: { type: string, example: "The given data was invalid." }
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+          example:
+            scheduled_at: ["Technician #4 already has a conflicting appointment at that time."]
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, technician, customer] }
+        technician_id: { type: integer, nullable: true }
+        customer_id: { type: integer, nullable: true }
+
+    ServiceRequest:
+      type: object
+      properties:
+        id: { type: integer }
+        service_type: { type: string }
+        description: { type: string }
+        status:
+          type: string
+          enum: [new, analyzing, ready_for_assignment, assigned, scheduled, in_progress, completed, reviewed, closed, cancelled]
+        category: { type: string, nullable: true }
+        priority: { type: string, nullable: true, enum: [low, medium, high, critical] }
+        required_skill: { type: string, nullable: true }
+        estimated_duration_minutes: { type: integer, nullable: true }
+        scheduled_at: { type: string, format: date-time, nullable: true }
+        address: { type: string }
+        customer: { $ref: '#/components/schemas/Customer' }
+        ai_analysis: { $ref: '#/components/schemas/AiAnalysis' }
+        assignment: { $ref: '#/components/schemas/Assignment' }
+        invoice: { $ref: '#/components/schemas/Invoice' }
+        service_note: { $ref: '#/components/schemas/ServiceNote' }
+        review: { $ref: '#/components/schemas/Review' }
+        status_history:
+          type: array
+          items:
+            type: object
+            properties:
+              from_status: { type: string, nullable: true }
+              to_status: { type: string }
+              note: { type: string, nullable: true }
+              created_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    AiAnalysis:
+      type: object
+      description: The AI's original suggestion. Immutable once written -- admin decisions are recorded on ServiceRequest itself, never here.
+      properties:
+        category: { type: string }
+        priority: { type: string }
+        issue: { type: string }
+        estimated_duration_minutes: { type: integer }
+        required_skill: { type: string }
+        confidence: { type: number }
+        accepted_by_admin: { type: boolean, nullable: true }
+
+    Assignment:
+      type: object
+      properties:
+        technician: { $ref: '#/components/schemas/Technician' }
+        was_ai_recommended: { type: boolean }
+        ai_rank_score: { type: number, nullable: true }
+        ai_rationale: { type: string, nullable: true }
+
+    Technician:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        skills: { type: array, items: { type: string } }
+        status: { type: string, enum: [available, on_job, off_duty] }
+        rating_avg: { type: number }
+        active_jobs_count: { type: integer }
+        recent_jobs:
+          type: array
+          items:
+            type: object
+            properties:
+              service_request_id: { type: integer }
+              service_type: { type: string, nullable: true }
+              status: { type: string, nullable: true }
+              scheduled_at: { type: string, format: date-time, nullable: true }
+
+    Customer:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        phone: { type: string, nullable: true }
+        address: { type: string }
+        city: { type: string, nullable: true }
+        service_requests_count: { type: integer }
+        recent_requests:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              service_type: { type: string }
+              status: { type: string }
+              created_at: { type: string, format: date-time }
+
+    ServiceNote:
+      type: object
+      properties:
+        id: { type: integer }
+        raw_notes: { type: string }
+        ai_generated_report: { type: string, nullable: true }
+        final_report: { type: string, nullable: true }
+        photo_paths: { type: array, items: { type: string } }
+        is_finalized: { type: boolean }
+        finalized_at: { type: string, format: date-time, nullable: true }
+
+    Review:
+      type: object
+      properties:
+        id: { type: integer }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Invoice:
+      type: object
+      properties:
+        id: { type: integer }
+        status: { type: string, enum: [draft, issued, paid, cancelled] }
+        labor_cost: { type: number }
+        parts_cost: { type: number }
+        total: { type: number }
+        issued_at: { type: string, format: date-time, nullable: true }
+        paid_at: { type: string, format: date-time, nullable: true }
+
+    Document:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        category: { type: string, nullable: true }
+        status: { type: string, enum: [uploaded, processing, indexed, failed] }
+        page_count: { type: integer, nullable: true }
+        processing_error: { type: string, nullable: true }
+        chunk_count: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }

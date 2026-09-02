@@ -1,0 +1,107 @@
+
+services:
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: serviflow_app
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+      - /var/www/html/vendor
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - serviflow
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: serviflow_nginx
+    ports:
+      - "8000:80"
+    volumes:
+      - ./backend:/var/www/html
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - app
+    networks:
+      - serviflow
+
+  queue:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: serviflow_queue
+    working_dir: /var/www/html
+    command: php artisan queue:work redis --tries=3 --backoff=5 --sleep=2
+    volumes:
+      - ./backend:/var/www/html
+      - /var/www/html/vendor
+    depends_on:
+      - postgres
+      - redis
+      - ollama
+    networks:
+      - serviflow
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: serviflow_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: serviflow
+      POSTGRES_USER: serviflow
+      POSTGRES_PASSWORD: serviflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - serviflow
+
+  redis:
+    image: redis:7-alpine
+    container_name: serviflow_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - serviflow
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: serviflow_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - serviflow
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: serviflow_frontend
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    command: npm run dev -- --host 0.0.0.0
+    depends_on:
+      - nginx
+    networks:
+      - serviflow
+
+networks:
+  serviflow:
+    driver: bridge
+
+volumes:
+  pgdata:
+  ollama_data:
