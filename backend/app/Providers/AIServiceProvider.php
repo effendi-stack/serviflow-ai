@@ -24,6 +24,8 @@ class AIServiceProvider extends ServiceProvider
                     embeddingModel: config('ai.ollama.embedding_model'),
                     timeout: config('ai.request_timeout'),
                     maxRetries: config('ai.max_retries'),
+                    fastModel: config('ai.ollama.fast_model'),
+                    keepAlive: (string) config('ai.ollama.keep_alive'),
                 ),
                 default => throw new \InvalidArgumentException(
                     'Unsupported AI provider: '.config('ai.provider')

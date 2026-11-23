@@ -87,9 +87,19 @@ docker compose up -d --build
 docker compose exec app php artisan key:generate
 docker compose exec app php artisan migrate
 docker compose exec app php artisan db:seed
-docker compose exec ollama ollama pull llama3.1
-docker compose exec ollama ollama pull nomic-embed-text
 ```
+
+**Ollama (local AI).** On macOS, run Ollama natively rather than in Docker: Docker on macOS has no GPU access, so a containerised model is several times slower. The containers reach it at `host.docker.internal:11434`.
+
+```bash
+brew install ollama && ollama serve        # or install the Ollama app
+ollama pull llama3.2:3b                    # fast model: classification, ranking
+ollama pull llama3.1:8b                    # chat model: reports, RAG answers, analytics
+ollama pull nomic-embed-text               # embeddings
+docker compose exec app php artisan ai:warm   # preload models so the first request isn't slow
+```
+
+On a Linux host with a GPU you can use the bundled container instead: `docker compose --profile ollama up -d`, then set `OLLAMA_BASE_URL=http://ollama:11434` in `backend/.env`. Models and per-feature limits (model tier, temperature, max tokens) live in `backend/config/ai.php`.
 
 - App: http://localhost:5173 (frontend) / http://localhost:8000/api (backend)
 - Demo logins (password `password` for all three): `admin@serviflow.test`, `technician@serviflow.test`, `customer@serviflow.test`

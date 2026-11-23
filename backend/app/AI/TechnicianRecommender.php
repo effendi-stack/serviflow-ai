@@ -72,7 +72,7 @@ class TechnicianRecommender
         $error = null;
 
         try {
-            $raw = $this->provider->complete($systemPrompt, $userPrompt, ['format' => 'json']);
+            $raw = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('technician_recommendation', ['format' => 'json']));
             $ranked = $this->validateRanking($raw, $eligible->pluck('id')->all());
             $succeeded = true;
 

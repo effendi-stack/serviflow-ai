@@ -59,7 +59,7 @@ class KnowledgeAssistant
 
             $userPrompt = "Sources:\n{$context}\n\nQuestion: {$question}";
 
-            $answer = $this->provider->complete($systemPrompt, $userPrompt);
+            $answer = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('knowledge_answer'));
             $succeeded = true;
 
             return [

@@ -66,7 +66,7 @@ class TicketClassifier
         $error = null;
 
         try {
-            $raw = $this->provider->complete($systemPrompt, $userPrompt, ['format' => 'json']);
+            $raw = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('ticket_classification', ['format' => 'json']));
 
             $validated = JsonSchemaValidator::validate($raw, [
                 'category' => ['type' => 'string', 'enum' => self::ALLOWED_CATEGORIES],

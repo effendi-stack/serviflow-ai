@@ -35,7 +35,7 @@ class AnalyticsExplainer
         $error = null;
 
         try {
-            $answer = $this->provider->complete($systemPrompt, $userPrompt);
+            $answer = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('analytics_explanation'));
             $succeeded = true;
 
             return $answer;

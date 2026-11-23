@@ -4,6 +4,7 @@ namespace App\Actions;
 
 use App\AI\AiInteractionLogger;
 use App\AI\Contracts\AIProviderInterface;
+use App\AI\FeatureOptions;
 use App\Models\ServiceNote;
 
 /**
@@ -35,7 +36,7 @@ class GenerateJobSummary
         $error = null;
 
         try {
-            $output = $this->provider->complete($systemPrompt, $note->raw_notes);
+            $output = $this->provider->complete($systemPrompt, $note->raw_notes, FeatureOptions::for('service_report'));
             $succeeded = true;
         } catch (\Throwable $e) {
             $error = $e->getMessage();

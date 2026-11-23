@@ -9,6 +9,8 @@ services:
     volumes:
       - ./backend:/var/www/html
       - /var/www/html/vendor
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - postgres
       - redis
@@ -38,10 +40,11 @@ services:
     volumes:
       - ./backend:/var/www/html
       - /var/www/html/vendor
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - postgres
       - redis
-      - ollama
     networks:
       - serviflow
 
@@ -70,10 +73,16 @@ services:
     networks:
       - serviflow
 
+  # Optional. On macOS run Ollama natively instead (no GPU inside Docker on
+  # macOS). On a Linux GPU host: `docker compose --profile ollama up -d` and
+  # set OLLAMA_BASE_URL=http://ollama:11434 in backend/.env.
   ollama:
     image: ollama/ollama:latest
     container_name: serviflow_ollama
+    profiles: ["ollama"]
     restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
     ports:
       - "11434:11434"
     volumes:
