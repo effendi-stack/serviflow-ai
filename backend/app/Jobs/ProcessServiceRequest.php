@@ -29,7 +29,17 @@ class ProcessServiceRequest implements ShouldQueue
 
     public int $backoff = 10;
 
-    public function __construct(public int $serviceRequestId) {}
+    /**
+     * Above the worst-case AI call (request_timeout x HTTP retries), and
+     * below the redis connection's retry_after (180s).
+     */
+    public int $timeout = 150;
+
+    public function __construct(public int $serviceRequestId)
+    {
+        // Own queue so classification never waits behind document imports.
+        $this->onQueue('ai-fast');
+    }
 
     public function handle(TicketClassifier $classifier): void
     {

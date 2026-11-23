@@ -18,7 +18,20 @@ class GenerateEmbedding implements ShouldQueue
 
     public int $backoff = 20;
 
-    public function __construct(public int $documentId, public array $pages) {}
+    /** Large PDFs take minutes; stays below redis-long's retry_after (960s). */
+    public int $timeout = 900;
+
+    public function __construct(public int $documentId, public array $pages)
+    {
+        // Long-running work gets its own queue and a connection with a
+        // longer retry_after. Only switch connection when Redis is in use,
+        // so the sync driver in tests keeps working.
+        if (config('queue.default') === 'redis') {
+            $this->onConnection('redis-long');
+        }
+
+        $this->onQueue('documents');
+    }
 
     public function handle(DocumentEmbedder $embedder): void
     {

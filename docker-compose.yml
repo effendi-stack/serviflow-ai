@@ -36,7 +36,7 @@ services:
       dockerfile: Dockerfile
     container_name: serviflow_queue
     working_dir: /var/www/html
-    command: php artisan queue:work redis --tries=3 --backoff=5 --sleep=2
+    command: php artisan horizon
     volumes:
       - ./backend:/var/www/html
       - /var/www/html/vendor

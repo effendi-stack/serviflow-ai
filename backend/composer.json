@@ -4,9 +4,10 @@
     "description": "ServiFlow AI - AI-Powered Field Service Management Platform",
     "require": {
         "php": "^8.2",
-        "laravel/framework": "^11.0",
-        "laravel/sanctum": "^4.0",
         "guzzlehttp/guzzle": "^7.8",
+        "laravel/framework": "^11.0",
+        "laravel/horizon": "^5.0",
+        "laravel/sanctum": "^4.0",
         "smalot/pdfparser": "^2.9",
         "spatie/laravel-query-builder": "^5.8"
     },

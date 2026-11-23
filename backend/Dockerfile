@@ -2,7 +2,7 @@ FROM php:8.3-fpm
 
 RUN apt-get update && apt-get install -y \
     git curl unzip libpq-dev libzip-dev libonig-dev $PHPIZE_DEPS \
-    && docker-php-ext-install pdo pdo_pgsql pgsql zip mbstring \
+    && docker-php-ext-install pdo pdo_pgsql pgsql zip mbstring pcntl \
     && pecl install redis \
     && docker-php-ext-enable redis \
     && rm -rf /var/lib/apt/lists/*

@@ -1,9 +1,7 @@
 <?php
 
-use App\Providers\AIServiceProvider;
-use App\Providers\AppServiceProvider;
-
 return [
-    AppServiceProvider::class,
-    AIServiceProvider::class,
+    App\Providers\AIServiceProvider::class,
+    App\Providers\AppServiceProvider::class,
+    App\Providers\HorizonServiceProvider::class,
 ];
