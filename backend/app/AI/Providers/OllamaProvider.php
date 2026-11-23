@@ -3,6 +3,7 @@
 namespace App\AI\Providers;
 
 use App\AI\Contracts\AIProviderInterface;
+use App\AI\Contracts\SupportsBatchEmbedding;
 use App\AI\Exceptions\AIProviderException;
 use Illuminate\Support\Facades\Http;
 
@@ -25,7 +26,7 @@ use Illuminate\Support\Facades\Http;
  * - keep_alive keeps models loaded between requests so users don't pay
  *   model-load time after an idle period.
  */
-class OllamaProvider implements AIProviderInterface
+class OllamaProvider implements AIProviderInterface, SupportsBatchEmbedding
 {
     protected ?string $lastModel = null;
 
@@ -94,6 +95,47 @@ class OllamaProvider implements AIProviderInterface
         }
 
         return (array) data_get($response->json(), 'embedding', []);
+    }
+
+    /**
+     * Embed many texts in one request via /api/embed, which accepts an
+     * array input -- far fewer round trips than one call per chunk.
+     */
+    public function embedMany(array $texts): array
+    {
+        if ($texts === []) {
+            return [];
+        }
+
+        $response = Http::timeout($this->timeout)
+            ->retry($this->maxRetries, 200)
+            ->baseUrl($this->baseUrl)
+            ->post('/api/embed', [
+                'model' => $this->embeddingModel,
+                'input' => array_values($texts),
+                'keep_alive' => $this->keepAlive,
+            ]);
+
+        if ($response->failed()) {
+            throw new AIProviderException(
+                "Ollama batch embedding request failed with status {$response->status()}: {$response->body()}"
+            );
+        }
+
+        $embeddings = (array) data_get($response->json(), 'embeddings', []);
+
+        if (count($embeddings) !== count($texts)) {
+            throw new AIProviderException(sprintf(
+                'Ollama returned %d embeddings for %d inputs.', count($embeddings), count($texts)
+            ));
+        }
+
+        return $embeddings;
+    }
+
+    public function embeddingModel(): string
+    {
+        return $this->embeddingModel;
     }
 
     /**

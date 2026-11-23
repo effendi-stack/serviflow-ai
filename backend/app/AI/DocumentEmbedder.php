@@ -3,8 +3,8 @@
 namespace App\AI;
 
 use App\AI\Contracts\AIProviderInterface;
+use App\AI\Contracts\SupportsBatchEmbedding;
 use App\Models\Document;
-use App\Models\DocumentChunk;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -27,34 +27,73 @@ class DocumentEmbedder
         protected int $chunkOverlap = 120,
     ) {}
 
+    /** Chunks sent to the embedding model per request. */
+    public const BATCH_SIZE = 32;
+
     /**
+     * Embeddings are generated before the transaction opens, in batches
+     * (spec v2 section 10.4): fewer round trips to Ollama, and no database
+     * transaction held open while waiting on the model. Rows are then
+     * written in one short transaction, each with its vector and the
+     * model that produced it.
+     *
      * @param  array<int,array{page_number:?int,text:string}>  $pages
      */
     public function process(Document $document, array $pages): void
     {
-        DB::transaction(function () use ($document, $pages) {
-            $index = 0;
+        $chunks = [];
 
-            foreach ($pages as $page) {
-                foreach ($this->chunk($page['text']) as $chunkText) {
-                    $embedding = $this->provider->embed($chunkText);
+        foreach ($pages as $page) {
+            foreach ($this->chunk($page['text']) as $chunkText) {
+                $chunks[] = ['page_number' => $page['page_number'] ?? null, 'content' => $chunkText];
+            }
+        }
 
-                    $chunk = DocumentChunk::create([
+        $embeddings = $this->embedAll(array_column($chunks, 'content'));
+        $model = $this->provider instanceof SupportsBatchEmbedding
+            ? $this->provider->embeddingModel()
+            : null;
+        $now = now();
+
+        DB::transaction(function () use ($document, $chunks, $embeddings, $model, $now) {
+            foreach (array_chunk($chunks, 100, true) as $slice) {
+                $rows = [];
+
+                foreach ($slice as $index => $chunk) {
+                    $rows[] = [
                         'document_id' => $document->id,
                         'chunk_index' => $index,
-                        'page_number' => $page['page_number'] ?? null,
-                        'content' => $chunkText,
-                    ]);
-
-                    DB::statement(
-                        'UPDATE document_chunks SET embedding = ? WHERE id = ?',
-                        [$this->toVectorLiteral($embedding), $chunk->id]
-                    );
-
-                    $index++;
+                        'page_number' => $chunk['page_number'],
+                        'content' => $chunk['content'],
+                        'embedding_model' => $model,
+                        'embedding' => $this->toVectorLiteral($embeddings[$index]),
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
                 }
+
+                DB::table('document_chunks')->insert($rows);
             }
         });
+    }
+
+    /**
+     * @param  string[]  $texts
+     * @return array<int,float[]>
+     */
+    private function embedAll(array $texts): array
+    {
+        if (! $this->provider instanceof SupportsBatchEmbedding) {
+            return array_map(fn (string $text) => $this->provider->embed($text), $texts);
+        }
+
+        $embeddings = [];
+
+        foreach (array_chunk($texts, self::BATCH_SIZE) as $batch) {
+            array_push($embeddings, ...$this->provider->embedMany($batch));
+        }
+
+        return $embeddings;
     }
 
     /**
