@@ -3,8 +3,10 @@
 use App\AI\Contracts\AIProviderInterface;
 use App\AI\Contracts\SupportsBatchEmbedding;
 use App\AI\DocumentEmbedder;
+use App\AI\Exceptions\AIProviderException;
 use App\AI\Providers\OllamaProvider;
 use App\Models\Document;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 
@@ -46,7 +48,7 @@ class CountingBatchEmbeddingProvider implements AIProviderInterface, SupportsBat
 
 function makeEmbeddingTestDocument(): Document
 {
-    $admin = \App\Models\User::factory()->admin()->create();
+    $admin = User::factory()->admin()->create();
 
     return Document::create([
         'title' => 'AC manual',
@@ -98,7 +100,7 @@ it('rejects a batch response whose length does not match the input', function ()
     $provider = new OllamaProvider('http://ollama:11434', 'llama3.1:8b', 'nomic-embed-text');
 
     expect(fn () => $provider->embedMany(['first', 'second']))
-        ->toThrow(\App\AI\Exceptions\AIProviderException::class);
+        ->toThrow(AIProviderException::class);
 });
 
 it('indexes chunk embeddings with HNSW for fast similarity search', function () {

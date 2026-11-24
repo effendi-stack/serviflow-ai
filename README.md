@@ -68,13 +68,24 @@ The AI layer follows one rule throughout: **the AI can suggest, only Laravel and
 - **Every AI call is logged**, success or failure, to `ai_interactions` — feature, prompt, output, confidence, latency, and error if any. This is the audit trail behind every AI-influenced decision in the system.
 - **Failures degrade safely.** A failed classification still leaves the request at `READY_FOR_ASSIGNMENT` for manual triage rather than stuck; transient connection failures are retried (`config('ai.max_retries')`); a failed knowledge-base document upload surfaces its error on the document itself rather than disappearing.
 
+## Performance
+
+Local LLM inference is the bottleneck, so the design keeps users from waiting on it:
+
+- **No request waits for a full generation.** Classification runs in a background job; service reports and knowledge-base answers stream to the browser over Server-Sent Events (`/generate-report/stream`, `/knowledge/ask/stream`), so text appears as it is written.
+- **Right-sized models, kept warm.** A small model (`OLLAMA_FAST_MODEL`) handles classification and ranking; the larger chat model handles long-form text. Per-feature temperature and token caps live in `config/ai.php`. `keep_alive` and `php artisan ai:warm` keep models loaded.
+- **Separate queues under Horizon.** `ai-fast` (classification), `documents` (extraction + embedding, on a long-timeout connection) and `default`, so a large PDF import never delays a new request. AI worker counts follow `OLLAMA_NUM_PARALLEL`.
+- **Fast retrieval.** Chunks are embedded in batches of 32 per Ollama call and searched through an HNSW pgvector index.
+- **Caching.** Question embeddings, RAG answers (keyed on the retrieved chunks) and analytics explanations (keyed on the exact numbers) are cached in Redis; the dashboard summary is cached and cleared whenever a request or review changes. Cache hits are still logged in `ai_interactions` (`cache_hit`).
+- **Database.** Foreign-key and filter columns are indexed, scheduling conflicts are a single SQL `EXISTS` query, and lazy loading throws outside production so N+1 queries can't slip in.
+
 ## Testing
 
 ```bash
 docker compose exec app vendor/bin/pest
 ```
 
-104 tests across scheduling (interval-overlap conflict detection), the full technician job workflow, customer review, AI triage and validation (malformed/missing/empty/unexpected-field responses), RAG retrieval and page-aware chunking, the complete status-transition matrix, and authorization (role + ownership, including cross-technician and cross-customer access).
+129 tests across scheduling (interval-overlap conflict detection), the full technician job workflow, customer review, AI triage and validation (malformed/missing/empty/unexpected-field responses), RAG retrieval and page-aware chunking, the complete status-transition matrix, authorization (role + ownership, including cross-technician and cross-customer access), and performance behaviour (queue routing, batched embeddings, the HNSW index, caching and SSE streaming).
 
 ## Quick start
 

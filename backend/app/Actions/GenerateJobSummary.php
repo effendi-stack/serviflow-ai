@@ -3,6 +3,7 @@
 namespace App\Actions;
 
 use App\AI\AiInteractionLogger;
+use App\AI\AiStream;
 use App\AI\Contracts\AIProviderInterface;
 use App\AI\FeatureOptions;
 use App\Models\ServiceNote;
@@ -21,7 +22,10 @@ class GenerateJobSummary
         protected AiInteractionLogger $logger,
     ) {}
 
-    public function execute(ServiceNote $note): ServiceNote
+    /**
+     * @param  callable(string):void|null  $onToken  receives text as it is generated (streaming endpoint)
+     */
+    public function execute(ServiceNote $note, ?callable $onToken = null): ServiceNote
     {
         $systemPrompt = <<<'PROMPT'
         You turn a field technician's short notes into a professional,
@@ -36,7 +40,7 @@ class GenerateJobSummary
         $error = null;
 
         try {
-            $output = $this->provider->complete($systemPrompt, $note->raw_notes, FeatureOptions::for('service_report'));
+            $output = AiStream::complete($this->provider, $systemPrompt, $note->raw_notes, FeatureOptions::for('service_report'), $onToken);
             $succeeded = true;
         } catch (\Throwable $e) {
             $error = $e->getMessage();

@@ -1,6 +1,7 @@
 <?php
 
 use App\AI\Exceptions\AIProviderException;
+use App\AI\FeatureOptions;
 use App\AI\Providers\OllamaProvider;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
@@ -90,7 +91,7 @@ it('uses the chat model for long-form tasks and falls back to it when no fast mo
 it('reads per-feature settings from config so callers never hard-code models', function () {
     config(['ai.features.ticket_classification' => ['model' => 'fast', 'temperature' => 0.0, 'max_tokens' => 200]]);
 
-    expect(\App\AI\FeatureOptions::for('ticket_classification', ['format' => 'json']))->toBe([
+    expect(FeatureOptions::for('ticket_classification', ['format' => 'json']))->toBe([
         'model_tier' => 'fast', 'temperature' => 0.0, 'max_tokens' => 200, 'format' => 'json',
     ]);
 });

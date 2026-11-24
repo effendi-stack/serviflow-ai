@@ -2,7 +2,9 @@
 
 use App\AI\Contracts\AIProviderInterface;
 use App\AI\DocumentEmbedder;
+use App\AI\Exceptions\AIProviderException;
 use App\AI\KnowledgeAssistant;
+use App\Http\Controllers\Api\AnalyticsController;
 use App\Models\AiInteraction;
 use App\Models\Document;
 use App\Models\ServiceRequest;
@@ -25,7 +27,7 @@ class CountingCacheProvider implements AIProviderInterface
         $this->completeCalls++;
 
         if ($this->fail) {
-            throw new \App\AI\Exceptions\AIProviderException('Ollama is down');
+            throw new AIProviderException('Ollama is down');
         }
 
         return 'Check the drain line [Source 1].';
@@ -114,7 +116,7 @@ it('serves the dashboard summary from cache and refreshes it when a request chan
     $total = fn () => $this->actingAs($admin)->getJson('/api/analytics/summary')->json('data.total_jobs');
 
     expect($total())->toBe(2);
-    expect(cache()->has(\App\Http\Controllers\Api\AnalyticsController::SUMMARY_CACHE_KEY))->toBeTrue();
+    expect(cache()->has(AnalyticsController::SUMMARY_CACHE_KEY))->toBeTrue();
 
     ServiceRequest::factory()->create();
 

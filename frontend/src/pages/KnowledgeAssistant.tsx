@@ -1,6 +1,6 @@
 import { useState, FormEvent } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { askKnowledgeBase } from '../services/knowledge'
+import { askKnowledgeBaseStream } from '../services/knowledge'
 import { useDocuments, useUploadDocument, useDeleteDocument, useReindexDocument } from '../hooks/useKnowledge'
 import { useAuth } from '../hooks/useAuth'
 import { AiBadge } from '../components/AiBadge'
@@ -19,14 +19,31 @@ export default function KnowledgeAssistant() {
   const { user } = useAuth()
   const [question, setQuestion] = useState('')
   const [history, setHistory] = useState<Array<{ question: string; answer: KnowledgeAnswer }>>([])
-  const ask = useMutation({ mutationFn: askKnowledgeBase })
+  const [pending, setPending] = useState<{ question: string; text: string } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const ask = useMutation({
+    mutationFn: (q: string) =>
+      askKnowledgeBaseStream(q, (text) => setPending((p) => (p ? { ...p, text: p.text + text } : p))),
+  })
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!question.trim()) return
-    const answer = await ask.mutateAsync(question)
-    setHistory((h) => [...h, { question, answer }])
+    const asked = question.trim()
+    if (!asked) return
+    setError(null)
+    setPending({ question: asked, text: '' })
     setQuestion('')
+    try {
+      // The streamed text is shown as it arrives; the final payload
+      // replaces it and adds the sources.
+      const answer = await ask.mutateAsync(asked)
+      setHistory((h) => [...h, { question: asked, answer }])
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not reach the knowledge assistant.')
+      setQuestion(asked)
+    } finally {
+      setPending(null)
+    }
   }
 
   return (
@@ -64,7 +81,22 @@ export default function KnowledgeAssistant() {
             </div>
           </div>
         ))}
-        {ask.isPending && <div className="text-slate-500 text-sm">Searching the knowledge base…</div>}
+        {pending && (
+          <div className="space-y-2">
+            <div className="text-slate-300 font-medium">{pending.question}</div>
+            <div className="card p-4">
+              {pending.text ? (
+                <p className="text-sm whitespace-pre-wrap">
+                  {pending.text}
+                  <span className="inline-block w-2 h-4 ml-0.5 align-text-bottom bg-slate-500 animate-pulse" />
+                </p>
+              ) : (
+                <p className="text-slate-500 text-sm">Searching the knowledge base…</p>
+              )}
+            </div>
+          </div>
+        )}
+        {error && <p className="text-signal-red text-sm">{error}</p>}
       </div>
 
       <form onSubmit={handleSubmit} className="flex gap-2">

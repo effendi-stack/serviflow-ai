@@ -4,6 +4,7 @@ namespace App\AI\Providers;
 
 use App\AI\Contracts\AIProviderInterface;
 use App\AI\Contracts\SupportsBatchEmbedding;
+use App\AI\Contracts\SupportsStreaming;
 use App\AI\Exceptions\AIProviderException;
 use Illuminate\Support\Facades\Http;
 
@@ -26,7 +27,7 @@ use Illuminate\Support\Facades\Http;
  * - keep_alive keeps models loaded between requests so users don't pay
  *   model-load time after an idle period.
  */
-class OllamaProvider implements AIProviderInterface, SupportsBatchEmbedding
+class OllamaProvider implements AIProviderInterface, SupportsBatchEmbedding, SupportsStreaming
 {
     protected ?string $lastModel = null;
 
@@ -42,31 +43,10 @@ class OllamaProvider implements AIProviderInterface, SupportsBatchEmbedding
 
     public function complete(string $systemPrompt, string $userPrompt, array $options = []): string
     {
-        $model = $this->resolveModel($options);
-        $this->lastModel = $model;
-
-        $generation = ['temperature' => $options['temperature'] ?? 0.2];
-
-        if (isset($options['max_tokens'])) {
-            $generation['num_predict'] = (int) $options['max_tokens'];
-        }
-
         $response = Http::timeout($this->timeout)
             ->retry($this->maxRetries, 200)
             ->baseUrl($this->baseUrl)
-            ->post('/api/chat', [
-                'model' => $model,
-                'stream' => false,
-                'keep_alive' => $this->keepAlive,
-                'messages' => [
-                    ['role' => 'system', 'content' => $systemPrompt],
-                    ['role' => 'user', 'content' => $userPrompt],
-                ],
-                'options' => $generation,
-                // Ask Ollama to constrain output to valid JSON when the caller
-                // expects a structured response (see AI/Schemas/*).
-                'format' => $options['format'] ?? null,
-            ]);
+            ->post('/api/chat', $this->chatPayload($systemPrompt, $userPrompt, $options, stream: false));
 
         if ($response->failed()) {
             throw new AIProviderException(
@@ -75,6 +55,76 @@ class OllamaProvider implements AIProviderInterface, SupportsBatchEmbedding
         }
 
         return (string) data_get($response->json(), 'message.content', '');
+    }
+
+    /**
+     * Streams /api/chat. Ollama sends one JSON object per line; each
+     * carries a fragment in message.content until one has "done": true.
+     * Not retried: once tokens have reached the user, a retry would
+     * repeat them.
+     */
+    public function stream(string $systemPrompt, string $userPrompt, array $options, callable $onToken): string
+    {
+        $response = Http::timeout($this->timeout)
+            ->withOptions(['stream' => true])
+            ->baseUrl($this->baseUrl)
+            ->post('/api/chat', $this->chatPayload($systemPrompt, $userPrompt, $options, stream: true));
+
+        if ($response->failed()) {
+            throw new AIProviderException(
+                "Ollama request failed with status {$response->status()}: {$response->body()}"
+            );
+        }
+
+        $body = $response->toPsrResponse()->getBody();
+        $buffer = '';
+        $text = '';
+
+        while (! $body->eof()) {
+            $buffer .= $body->read(1024);
+
+            while (($newline = strpos($buffer, "\n")) !== false) {
+                $line = trim(substr($buffer, 0, $newline));
+                $buffer = substr($buffer, $newline + 1);
+
+                if ($line === '') {
+                    continue;
+                }
+
+                $chunk = json_decode($line, true);
+
+                if (! is_array($chunk)) {
+                    throw new AIProviderException('Ollama sent a malformed stream line.');
+                }
+
+                if (isset($chunk['error'])) {
+                    throw new AIProviderException("Ollama stream error: {$chunk['error']}");
+                }
+
+                $fragment = (string) data_get($chunk, 'message.content', '');
+
+                if ($fragment !== '') {
+                    $text .= $fragment;
+                    $onToken($fragment);
+                }
+
+                if (! empty($chunk['done'])) {
+                    return $text;
+                }
+            }
+        }
+
+        if (trim($buffer) !== '') {
+            $chunk = json_decode(trim($buffer), true);
+            $fragment = (string) data_get($chunk, 'message.content', '');
+
+            if ($fragment !== '') {
+                $text .= $fragment;
+                $onToken($fragment);
+            }
+        }
+
+        return $text;
     }
 
     public function embed(string $text): array
@@ -173,6 +223,32 @@ class OllamaProvider implements AIProviderInterface, SupportsBatchEmbedding
     public function modelIdentifier(): string
     {
         return 'ollama:'.($this->lastModel ?? $this->chatModel);
+    }
+
+    protected function chatPayload(string $systemPrompt, string $userPrompt, array $options, bool $stream): array
+    {
+        $model = $this->resolveModel($options);
+        $this->lastModel = $model;
+
+        $generation = ['temperature' => $options['temperature'] ?? 0.2];
+
+        if (isset($options['max_tokens'])) {
+            $generation['num_predict'] = (int) $options['max_tokens'];
+        }
+
+        return [
+            'model' => $model,
+            'stream' => $stream,
+            'keep_alive' => $this->keepAlive,
+            'messages' => [
+                ['role' => 'system', 'content' => $systemPrompt],
+                ['role' => 'user', 'content' => $userPrompt],
+            ],
+            'options' => $generation,
+            // Ask Ollama to constrain output to valid JSON when the caller
+            // expects a structured response (see AI/Schemas/*).
+            'format' => $options['format'] ?? null,
+        ];
     }
 
     protected function resolveModel(array $options): string

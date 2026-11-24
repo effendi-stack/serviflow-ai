@@ -1,5 +1,10 @@
+import { postStream } from './stream'
 import { api } from './api'
 import type { KnowledgeAnswer, KnowledgeDocument } from '../types'
+
+export function askKnowledgeBaseStream(question: string, onToken: (text: string) => void) {
+  return postStream<KnowledgeAnswer>('/knowledge/ask/stream', { question }, onToken)
+}
 
 export async function askKnowledgeBase(question: string) {
   const { data } = await api.post<{ data: KnowledgeAnswer }>('/knowledge/ask', { question })

@@ -286,6 +286,27 @@ paths:
         '200': { $ref: '#/components/responses/ServiceNoteOne' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
+  /service-requests/{id}/generate-report/stream:
+    post:
+      tags: [Service Requests]
+      summary: Generate the AI draft report, streamed as it is written
+      description: |
+        Same rules as generate-report, but the response is a
+        text/event-stream. `token` events carry text fragments as the
+        model writes them; then `done` carries the saved ServiceNote, or
+        `error` carries `{message}` if generation failed (nothing is
+        saved). Authorization and validation errors are returned as
+        normal JSON before the stream starts.
+      parameters: [{ $ref: '#/components/parameters/ServiceRequestId' }]
+      responses:
+        '200':
+          description: Server-Sent Events stream (token*, then done or error)
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '403': { description: Not the assigned technician }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
   /service-requests/{id}/finalize-report:
     post:
       tags: [Service Requests]
@@ -595,6 +616,34 @@ paths:
                 type: object
                 properties: { data: { $ref: '#/components/schemas/Document' } }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /knowledge/ask/stream:
+    post:
+      tags: [Knowledge Base]
+      summary: Ask the knowledge base, with the answer streamed as it is written
+      description: |
+        Same retrieval and rules as /knowledge/ask, as a
+        text/event-stream: `token` events carry answer text, then `done`
+        carries the final `{answer, sources}`. The final answer replaces
+        the streamed text (it differs only if generation failed part-way
+        and a fallback message was returned). Admins and technicians only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string }
+      responses:
+        '200':
+          description: Server-Sent Events stream (token*, then done)
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '403': { description: Customers cannot use the knowledge assistant }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   /knowledge/ask:
     post:

@@ -1,3 +1,4 @@
+import { postStream } from './stream'
 import { api } from './api'
 import type { ServiceRequest, RecommendedTechnician, ServiceNote, Review } from '../types'
 
@@ -66,6 +67,10 @@ export async function upsertServiceNote(requestId: number, rawNotes: string, pho
     ...(photoPaths ? { photo_paths: photoPaths } : {}),
   })
   return data.data
+}
+
+export function generateReportStream(requestId: number, onToken: (text: string) => void) {
+  return postStream<ServiceNote>(`/service-requests/${requestId}/generate-report/stream`, {}, onToken)
 }
 
 export async function generateReport(requestId: number) {

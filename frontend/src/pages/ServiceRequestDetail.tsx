@@ -119,8 +119,16 @@ export default function ServiceRequestDetail() {
 
   function handleGenerateReport() {
     setWorkflowError(null)
-    generateReport.mutate(undefined, {
-      onError: (err: any) => setWorkflowError(errorMessage(err, 'raw_notes', 'Could not generate a report.')),
+    const previous = finalReport
+    // The draft streams straight into the editable field so the
+    // technician sees it being written instead of waiting for all of it.
+    setFinalReport('')
+    generateReport.mutate((text) => setFinalReport((current) => current + text), {
+      onSuccess: (saved) => setFinalReport(saved.ai_generated_report ?? ''),
+      onError: (err: any) => {
+        setFinalReport(previous)
+        setWorkflowError(err?.message ?? errorMessage(err, 'raw_notes', 'Could not generate a report.'))
+      },
     })
   }
 
@@ -386,6 +394,7 @@ export default function ServiceRequestDetail() {
                 rows={4}
                 value={finalReport}
                 onChange={(e) => setFinalReport(e.target.value)}
+                readOnly={generateReport.isPending}
                 placeholder="Edit the AI draft above, or write the final report yourself."
               />
               <button className="btn-primary text-sm" disabled={!finalReport.trim() || finalizeReport.isPending} onClick={handleFinalize}>

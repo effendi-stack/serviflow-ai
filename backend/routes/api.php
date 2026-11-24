@@ -32,6 +32,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::post('/notes', [ServiceNoteController::class, 'store']);
         Route::post('/generate-report', [ServiceNoteController::class, 'generateReport']);
+        Route::post('/generate-report/stream', [ServiceNoteController::class, 'streamReport']);
         Route::post('/finalize-report', [ServiceNoteController::class, 'finalize']);
         Route::post('/review', [ReviewController::class, 'store']);
 
@@ -56,6 +57,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/knowledge/documents/{document}', [KnowledgeController::class, 'destroy']);
         Route::post('/knowledge/documents/{document}/reindex', [KnowledgeController::class, 'reindex']);
         Route::post('/knowledge/ask', [KnowledgeController::class, 'ask']);
+        Route::post('/knowledge/ask/stream', [KnowledgeController::class, 'askStream']);
     });
 
     Route::get('/analytics/summary', [AnalyticsController::class, 'summary']);

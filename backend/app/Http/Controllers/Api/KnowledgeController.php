@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\AskKnowledgeRequest;
 use App\Http\Requests\UploadDocumentRequest;
 use App\Http\Resources\DocumentResource;
+use App\Http\Support\ServerSentEvents;
 use App\Jobs\ProcessDocument;
 use App\Models\Document;
 use Illuminate\Http\Request;
@@ -76,5 +77,22 @@ class KnowledgeController extends Controller
         $result = $assistant->ask($request->validated('question'));
 
         return response()->json(['data' => $result]);
+    }
+
+    /**
+     * Streams the answer as it is generated: "token" events carry text,
+     * then "done" carries the final answer and its sources. The final
+     * answer replaces the streamed text, which matters if generation
+     * failed part-way and a fallback message was returned instead.
+     */
+    public function askStream(AskKnowledgeRequest $request, KnowledgeAssistant $assistant)
+    {
+        $question = $request->validated('question');
+
+        return ServerSentEvents::response(function (callable $send) use ($assistant, $question) {
+            $result = $assistant->ask($question, fn (string $token) => $send('token', $token));
+
+            $send('done', $result);
+        });
     }
 }

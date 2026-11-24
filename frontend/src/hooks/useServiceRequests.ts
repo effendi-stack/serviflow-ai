@@ -80,10 +80,14 @@ export function useUpsertServiceNote(requestId: number) {
   })
 }
 
+/**
+ * Streams the AI draft: onToken receives text as it is generated, and the
+ * saved note is returned when generation finishes.
+ */
 export function useGenerateReport(requestId: number) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: () => api.generateReport(requestId),
+    mutationFn: (onToken: (text: string) => void) => api.generateReportStream(requestId, onToken),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['service-requests', requestId] }),
   })
 }

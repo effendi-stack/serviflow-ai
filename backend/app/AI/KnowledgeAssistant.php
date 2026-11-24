@@ -30,7 +30,10 @@ class KnowledgeAssistant
     /**
      * @return array{answer:string, sources:array<int,array{document_id:int,document_title:string,page_number:?int,excerpt:string}>}
      */
-    public function ask(string $question): array
+    /**
+     * @param  callable(string):void|null  $onToken  receives answer text as it is generated (streaming endpoint)
+     */
+    public function ask(string $question, ?callable $onToken = null): array
     {
         $start = microtime(true);
         $succeeded = false;
@@ -51,6 +54,10 @@ class KnowledgeAssistant
             if ($chunks->isEmpty()) {
                 $answer = "I couldn't find anything in the knowledge base for that question. "
                     .'Try rephrasing, or check whether the relevant manual/SOP has been uploaded.';
+
+                if ($onToken) {
+                    $onToken($answer);
+                }
 
                 return ['answer' => $answer, 'sources' => []];
             }
@@ -76,8 +83,12 @@ class KnowledgeAssistant
             $answer = AiResultCache::get($answerKey);
             $cacheHit = $answer !== null;
 
-            if (! $cacheHit) {
-                $answer = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('knowledge_answer'));
+            if ($cacheHit) {
+                if ($onToken) {
+                    $onToken($answer);
+                }
+            } else {
+                $answer = AiStream::complete($this->provider, $systemPrompt, $userPrompt, FeatureOptions::for('knowledge_answer'), $onToken);
                 AiResultCache::put($answerKey, $answer, self::ANSWER_CACHE_TTL_SECONDS);
             }
 

@@ -21,5 +21,8 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
-        //
+        // API errors are always JSON, even when the client asked for
+        // something else (e.g. an SSE client sending Accept:
+        // text/event-stream) -- never an HTML error page.
+        $exceptions->shouldRenderJsonWhen(fn ($request) => $request->is('api/*'));
     })->create();
