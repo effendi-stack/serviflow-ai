@@ -23,6 +23,7 @@ class AiInteractionLogger
         int $latencyMs,
         bool $succeeded,
         ?string $error = null,
+        bool $cacheHit = false,
     ): AiInteraction {
         return AiInteraction::create([
             'user_id' => Auth::id(),
@@ -33,6 +34,7 @@ class AiInteractionLogger
             'confidence' => $confidence,
             'latency_ms' => $latencyMs,
             'succeeded' => $succeeded,
+            'cache_hit' => $cacheHit,
             'error' => $error,
             'created_at' => now(),
         ]);

@@ -12,6 +12,8 @@ use App\AI\Contracts\AIProviderInterface;
  */
 class AnalyticsExplainer
 {
+    public const CACHE_TTL_SECONDS = 600;
+
     public function __construct(
         protected AIProviderInterface $provider,
         protected AiInteractionLogger $logger,
@@ -33,9 +35,20 @@ class AnalyticsExplainer
         $answer = null;
         $succeeded = false;
         $error = null;
+        $cacheKey = AiResultCache::key('analytics_explanation', $question, $aggregatedStats);
+        $cacheHit = false;
 
         try {
-            $answer = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('analytics_explanation'));
+            // The key includes the exact numbers, so a cached explanation
+            // is only reused while the underlying data is unchanged.
+            $answer = AiResultCache::get($cacheKey);
+            $cacheHit = $answer !== null;
+
+            if (! $cacheHit) {
+                $answer = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('analytics_explanation'));
+                AiResultCache::put($cacheKey, $answer, self::CACHE_TTL_SECONDS);
+            }
+
             $succeeded = true;
 
             return $answer;
@@ -53,6 +66,7 @@ class AnalyticsExplainer
                 latencyMs: (int) ((microtime(true) - $start) * 1000),
                 succeeded: $succeeded,
                 error: $error,
+                cacheHit: $cacheHit,
             );
         }
     }

@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Review;
 use App\Models\ServiceRequest;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -17,6 +18,15 @@ use Illuminate\Support\Facades\DB;
  */
 class AnalyticsController extends Controller
 {
+    public const SUMMARY_CACHE_KEY = 'analytics:summary';
+
+    /**
+     * Upper bound on staleness. The cache is also cleared whenever a
+     * service request or review changes (see AppServiceProvider), so in
+     * practice the dashboard reflects writes immediately.
+     */
+    public const SUMMARY_CACHE_TTL_SECONDS = 600;
+
     public function summary(Request $request)
     {
         abort_unless($request->user()->isAdmin(), 403);
@@ -40,6 +50,11 @@ class AnalyticsController extends Controller
 
     private function aggregate(): array
     {
+        return Cache::remember(self::SUMMARY_CACHE_KEY, self::SUMMARY_CACHE_TTL_SECONDS, fn () => $this->computeAggregate());
+    }
+
+    private function computeAggregate(): array
+    {
         $totalsByStatus = ServiceRequest::query()
             ->select('status', DB::raw('count(*) as count'))
             ->groupBy('status')
@@ -61,10 +76,10 @@ class AnalyticsController extends Controller
 
         return [
             'total_jobs' => (int) ServiceRequest::query()->count(),
-            'by_status' => $totalsByStatus,
+            'by_status' => $totalsByStatus->all(),
             'average_completion_minutes' => $avgCompletionMinutes ? round((float) $avgCompletionMinutes, 1) : null,
             'average_customer_rating' => $avgRating ? round((float) $avgRating, 2) : null,
-            'requests_per_month' => $requestsPerMonth,
+            'requests_per_month' => $requestsPerMonth->all(),
         ];
     }
 }

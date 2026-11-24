@@ -15,6 +15,12 @@ use Illuminate\Support\Facades\DB;
  */
 class KnowledgeAssistant
 {
+    /** Question embeddings never change for a given model. */
+    public const EMBEDDING_CACHE_TTL_SECONDS = 86400;
+
+    /** Answers are keyed on the retrieved chunk ids, so a re-index changes the key. */
+    public const ANSWER_CACHE_TTL_SECONDS = 3600;
+
     public function __construct(
         protected AIProviderInterface $provider,
         protected AiInteractionLogger $logger,
@@ -30,9 +36,16 @@ class KnowledgeAssistant
         $succeeded = false;
         $error = null;
         $answer = null;
+        $cacheHit = false;
 
         try {
-            $questionEmbedding = $this->provider->embed($question);
+            $normalized = mb_strtolower(trim(preg_replace('/\s+/', ' ', $question)));
+
+            $questionEmbedding = AiResultCache::remember(
+                AiResultCache::key('question_embedding', $normalized),
+                self::EMBEDDING_CACHE_TTL_SECONDS,
+                fn () => $this->provider->embed($question),
+            );
             $chunks = $this->retrieveSimilarChunks($questionEmbedding);
 
             if ($chunks->isEmpty()) {
@@ -59,7 +72,15 @@ class KnowledgeAssistant
 
             $userPrompt = "Sources:\n{$context}\n\nQuestion: {$question}";
 
-            $answer = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('knowledge_answer'));
+            $answerKey = AiResultCache::key('knowledge_answer', $normalized, $chunks->pluck('id')->all());
+            $answer = AiResultCache::get($answerKey);
+            $cacheHit = $answer !== null;
+
+            if (! $cacheHit) {
+                $answer = $this->provider->complete($systemPrompt, $userPrompt, FeatureOptions::for('knowledge_answer'));
+                AiResultCache::put($answerKey, $answer, self::ANSWER_CACHE_TTL_SECONDS);
+            }
+
             $succeeded = true;
 
             return [
@@ -86,6 +107,7 @@ class KnowledgeAssistant
                 latencyMs: (int) ((microtime(true) - $start) * 1000),
                 succeeded: $succeeded,
                 error: $error,
+                cacheHit: $cacheHit,
             );
         }
     }
