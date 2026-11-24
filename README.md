@@ -1,150 +1,368 @@
 # ServiFlow AI
 
-AI-powered field service management platform — Laravel + React/TypeScript + PostgreSQL/pgvector + Ollama, built entirely on a free/open-source stack.
+ServiFlow AI is a field service management application that helps businesses manage service requests, assign technicians, schedule jobs, and keep track of work progress.
 
-Laravel is the source of truth. AI classifies, ranks, summarizes, and explains — deterministic business rules and human approval still control every important write.
+I built this project using Laravel and React, with PostgreSQL for data storage and Ollama to handle the AI features. The idea is to bring service management and AI assistance together in one application, without relying on paid AI APIs or services.
 
-## Stack
+The AI helps with tasks such as understanding service requests, suggesting suitable technicians, generating service reports, and answering questions based on stored documents. Important decisions, such as approving requests and assigning technicians, are still handled through the application's normal business logic and admin approval.
 
-| Layer | Technology |
+## Technologies Used
+
+| Part | Technology |
 |---|---|
-| Backend | PHP 8.3 + Laravel 11 |
-| Frontend | React 18 + TypeScript + Tailwind + TanStack Query |
-| Database | PostgreSQL 16 + pgvector |
-| AI | Ollama (local LLM + local embeddings) |
-| Queue/Cache | Redis |
+| Backend | PHP 8.3, Laravel 11 |
+| Frontend | React 18, TypeScript, Tailwind CSS |
+| Data Fetching | TanStack Query |
+| Database | PostgreSQL 16, pgvector |
+| AI | Ollama (local LLM and embeddings) |
+| Queue & Cache | Redis |
 | Containers | Docker Compose |
 | Testing | Pest |
-| CI | GitHub Actions |
+| CI/CD | GitHub Actions |
 
-## Architecture
+## How It Works
 
+The frontend communicates with the Laravel backend through REST APIs. Laravel handles the main application logic, database operations, authentication, and business rules.
+
+AI-related tasks are processed through background jobs so that users don't have to wait for longer operations to finish. Ollama runs the language models locally, while PostgreSQL and pgvector are used to store and search document embeddings.
+
+Here's a simplified overview of the application:
+
+```text
+React + TypeScript
+        |
+        | REST API
+        v
+    Laravel API
+        |
+        +------ PostgreSQL + pgvector
+        |
+        +------ Redis
+        |          |
+        |          v
+        |      Queue Worker
+        |          |
+        |          v
+        |        Ollama
+        |     (LLM + Embeddings)
+        |
+        +------ AI Provider Interface
 ```
-React + TS  ──REST──▶  Laravel API ──▶ Postgres + pgvector
-                              │
-                              ├──▶ Redis (queues, cache)
-                              │        │
-                              │        ▼
-                              │   Queue Worker ──▶ Ollama (chat + embeddings)
-                              │
-                              └──▶ AiProviderInterface (swap providers without touching business logic)
+
+The AI provider interface also makes it easier to introduce another AI provider in the future without changing the main application logic.
+
+## Service Request Workflow
+
+The main part of ServiFlow AI is the service request workflow.
+
+When a customer submits a request, the system sends it for AI analysis. The AI helps identify the service category, priority, required skills, and estimated duration. An admin can then review the suggestions before assigning the job to a technician.
+
+Each request follows a defined sequence of statuses:
+
+```text
+NEW
+  |
+  v
+ANALYZING
+  |
+  v
+READY_FOR_ASSIGNMENT
+  |
+  v
+ASSIGNED
+  |
+  v
+SCHEDULED
+  |
+  v
+IN_PROGRESS
+  |
+  v
+COMPLETED
+  |
+  v
+REVIEWED
+  |
+  v
+CLOSED
 ```
 
-### Service request lifecycle
+A request can also be cancelled before it reaches the completed stage.
 
-Every job moves through an explicit state machine (`ServiceRequest::TRANSITIONS`) — Laravel rejects any transition not listed here, regardless of which endpoint tries to trigger it:
+Here's what happens at each stage:
 
-```
-   NEW ──▶ ANALYZING ──▶ READY_FOR_ASSIGNMENT ──▶ ASSIGNED ──▶ SCHEDULED ──▶ IN_PROGRESS ──▶ COMPLETED ──▶ REVIEWED ──▶ CLOSED
-    │           │                  │                  │             │              │
-    └───────────┴──────────────────┴──────────────────┴─────────────┴──────────────┘
-                                    ▼
-                               CANCELLED  (terminal; admin or the owning customer, any point before COMPLETED)
-```
-
-| Stage | Triggered by | What happens |
+| Status | Who handles it | Description |
 |---|---|---|
-| NEW → ANALYZING → READY_FOR_ASSIGNMENT | System (queued job) | AI classifies the request; a failed classification still lands the job here for manual triage — it never gets stuck |
-| READY_FOR_ASSIGNMENT | Admin | Accept or override the AI's category/priority/skill/duration (`POST /triage`) — this is what the rest of the system actually uses, not the AI's raw suggestion |
-| → ASSIGNED | Admin | Assign a technician; AI ranks only technicians that already passed a deterministic eligibility filter (skill + on-duty + no conflict) |
-| → SCHEDULED | Admin | Confirm an appointment time; rejected if it conflicts with the technician's other jobs |
-| → IN_PROGRESS | Technician | Start the job |
-| (within IN_PROGRESS) | Technician | Record notes/photos → generate an AI draft report → edit and finalize it |
-| → COMPLETED | Technician | Requires a finalized report first; frees the technician back to available |
-| → REVIEWED → CLOSED | Customer | Submitting a review closes the loop in one step |
+| New | Customer | A customer submits a service request. |
+| Analyzing | System | The AI processes the request and suggests its category, priority, required skills, and estimated duration. |
+| Ready for Assignment | Admin | The admin reviews the AI suggestions and makes any necessary changes. |
+| Assigned | Admin | A suitable technician is selected for the job. |
+| Scheduled | Admin | The appointment date and time are confirmed. |
+| In Progress | Technician | The technician starts working on the assigned job. |
+| Completed | Technician | The technician submits and finalizes the service report. |
+| Reviewed | Customer | The customer submits feedback about the completed service. |
+| Closed | System | The request is closed after the customer submits a review. |
 
-## API documentation
+The application also checks technician availability before allowing an assignment. It considers their skills, working status, and existing appointments to prevent scheduling conflicts.
 
-Full OpenAPI 3.0 spec: [`backend/docs/openapi.yaml`](backend/docs/openapi.yaml) — every endpoint, request/response schema, and the validation-error shape used consistently across the API. Paste it into [Swagger Editor](https://editor.swagger.io) or any OpenAPI viewer for an interactive reference.
+If AI analysis fails, the request can still move forward for manual review. This prevents an AI issue from stopping the normal workflow.
 
-## AI safety & reliability
+## AI Features
 
-The AI layer follows one rule throughout: **the AI can suggest, only Laravel and a human can decide.**
+AI is used to assist with different parts of the application rather than taking over the entire workflow.
 
-- **AI output is untrusted input.** Every AI response is schema-validated (`JsonSchemaValidator`) before it touches anything — wrong type, out-of-enum value, or missing required field all raise `AIValidationException` and the response is discarded, not coerced. Fields the AI invents that aren't in the schema are silently dropped, never persisted.
-- **The AI's original suggestion is immutable.** `ai_analyses` stores exactly what the model said, including the raw response. When an admin accepts or overrides it via `POST /triage`, the *final* values live on `ServiceRequest` itself — a separate set of columns — so there's always an honest before/after: what the AI said, and what a human actually approved. "Accepted" vs. "overridden" is computed by diffing the two, not trusted from the client.
-- **Eligibility is a deterministic gate the AI never opens.** A technician must have the matching skill, be on duty, and have no scheduling conflict — checked in plain PHP/SQL — before the AI ever sees the candidate list. The AI ranks who's already eligible; it can't recommend someone who isn't.
-- **Analytics numbers are computed in SQL, never by the model.** `POST /analytics/explain` hands the AI the exact aggregate `GET /analytics/summary` returns and asks it to narrate that in prose. The `stats` block in the response is always the real database aggregate; the AI's prose is advisory narration sitting next to it, never a second source of truth.
-- **Every AI call is logged**, success or failure, to `ai_interactions` — feature, prompt, output, confidence, latency, and error if any. This is the audit trail behind every AI-influenced decision in the system.
-- **Failures degrade safely.** A failed classification still leaves the request at `READY_FOR_ASSIGNMENT` for manual triage rather than stuck; transient connection failures are retried (`config('ai.max_retries')`); a failed knowledge-base document upload surfaces its error on the document itself rather than disappearing.
+The current implementation includes:
 
-## Performance
+- **Service Request Analysis:** Reads customer requests and suggests a suitable category, priority, required skills, and estimated job duration.
+- **Technician Recommendation:** Ranks available technicians based on their suitability for a particular job.
+- **Service Report Generation:** Helps technicians prepare reports using their recorded notes and photos. The generated report can be edited before it is finalized.
+- **Document Processing:** Extracts content from uploaded documents and creates embeddings for later searches.
+- **Knowledge Base Assistant:** Allows users to ask questions based on documents stored in the system.
+- **Analytics Explanation:** Uses AI to explain existing dashboard statistics in a more understandable format.
 
-Local LLM inference is the bottleneck, so the design keeps users from waiting on it:
+### AI Validation and Approval
 
-- **No request waits for a full generation.** Classification runs in a background job; service reports and knowledge-base answers stream to the browser over Server-Sent Events (`/generate-report/stream`, `/knowledge/ask/stream`), so text appears as it is written.
-- **Right-sized models, kept warm.** A small model (`OLLAMA_FAST_MODEL`) handles classification and ranking; the larger chat model handles long-form text. Per-feature temperature and token caps live in `config/ai.php`. `keep_alive` and `php artisan ai:warm` keep models loaded.
-- **Separate queues under Horizon.** `ai-fast` (classification), `documents` (extraction + embedding, on a long-timeout connection) and `default`, so a large PDF import never delays a new request. AI worker counts follow `OLLAMA_NUM_PARALLEL`.
-- **Fast retrieval.** Chunks are embedded in batches of 32 per Ollama call and searched through an HNSW pgvector index.
-- **Caching.** Question embeddings, RAG answers (keyed on the retrieved chunks) and analytics explanations (keyed on the exact numbers) are cached in Redis; the dashboard summary is cached and cleared whenever a request or review changes. Cache hits are still logged in `ai_interactions` (`cache_hit`).
-- **Database.** Foreign-key and filter columns are indexed, scheduling conflicts are a single SQL `EXISTS` query, and lazy loading throws outside production so N+1 queries can't slip in.
+One important thing I considered when developing these features was how the application handles AI-generated responses.
 
-## Testing
+AI output is not always reliable, so I added validation before using its responses in the application.
+
+Some of the checks include:
+
+- Validating AI responses against the expected JSON schema.
+- Rejecting responses with missing or invalid fields.
+- Keeping the original AI suggestions separate from the values approved by an admin.
+- Checking technician eligibility through Laravel before asking AI to rank candidates.
+- Calculating dashboard statistics directly from the database instead of asking AI to generate numbers.
+
+I also keep a record of AI interactions, including the feature used, prompt, response, confidence, processing time, and any errors.
+
+This makes it easier to understand what happened when an AI operation fails or produces an unexpected result.
+
+## Performance Considerations
+
+Since the application uses locally hosted language models, AI processing can take some time depending on the model and available hardware.
+
+I used a few approaches to make the application more responsive:
+
+- **Background Processing:** Service request analysis and document processing run through Laravel queues instead of blocking the API request.
+- **Streaming Responses:** Service report generation and knowledge base answers use Server-Sent Events (SSE), allowing responses to appear as they are generated.
+- **Different AI Models:** Smaller models are used for faster tasks such as classification and technician ranking, while larger models handle longer responses.
+- **Model Loading:** Ollama's `keep_alive` setting and the `php artisan ai:warm` command help keep models ready for use.
+- **Separate Queues:** AI classification, document processing, and general jobs use separate queues so that heavier tasks don't delay other operations.
+- **Vector Search:** Document embeddings are generated in batches and searched using a PostgreSQL HNSW index through pgvector.
+- **Redis Caching:** Frequently used embeddings, knowledge base answers, analytics explanations, and dashboard summaries are cached to reduce repeated processing.
+- **Database Indexing:** Frequently queried columns are indexed, and scheduling conflicts are checked using SQL queries.
+
+## API Documentation
+
+The API documentation is available in:
+
+`backend/docs/openapi.yaml`
+
+It contains the available endpoints, request and response structures, and validation error formats.
+
+You can open the file using [Swagger Editor](https://editor.swagger.io) to explore the API documentation.
+
+## Running Tests
+
+I use Pest to test the main application features and make sure the different workflows behave as expected.
+
+To run the test suite:
 
 ```bash
 docker compose exec app vendor/bin/pest
 ```
 
-129 tests across scheduling (interval-overlap conflict detection), the full technician job workflow, customer review, AI triage and validation (malformed/missing/empty/unexpected-field responses), RAG retrieval and page-aware chunking, the complete status-transition matrix, authorization (role + ownership, including cross-technician and cross-customer access), and performance behaviour (queue routing, batched embeddings, the HNSW index, caching and SSE streaming).
+The current test suite contains 129 tests covering:
 
-## Quick start
+- Service request and technician workflows.
+- Technician scheduling and appointment conflicts.
+- Customer reviews.
+- AI request analysis and response validation.
+- Document processing and knowledge base retrieval.
+- Service request status transitions.
+- User roles, permissions, and ownership checks.
+- Queue processing, caching, and streaming responses.
+
+## Getting Started
+
+### 1. Clone the repository
 
 ```bash
-git clone <this-repo> serviflow-ai && cd serviflow-ai
+git clone <this-repo> serviflow-ai
+cd serviflow-ai
+```
+
+### 2. Set up environment files
+
+```bash
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
-docker compose up -d --build
+```
 
+### 3. Start the application
+
+```bash
+docker compose up -d --build
+```
+
+### 4. Generate the Laravel application key
+
+```bash
 docker compose exec app php artisan key:generate
+```
+
+### 5. Run database migrations and seeders
+
+```bash
 docker compose exec app php artisan migrate
 docker compose exec app php artisan db:seed
 ```
 
-**Ollama (local AI).** On macOS, run Ollama natively rather than in Docker: Docker on macOS has no GPU access, so a containerised model is several times slower. The containers reach it at `host.docker.internal:11434`.
+### 6. Set up Ollama
+
+Ollama is used to run the AI models locally.
+
+For macOS, I recommend installing and running Ollama directly on the host machine instead of inside Docker. Docker Desktop on macOS does not provide direct GPU access to containers, which can make local model inference slower.
+
+Install Ollama:
 
 ```bash
-brew install ollama && ollama serve        # or install the Ollama app
-ollama pull llama3.2:3b                    # fast model: classification, ranking
-ollama pull llama3.1:8b                    # chat model: reports, RAG answers, analytics
-ollama pull nomic-embed-text               # embeddings
-docker compose exec app php artisan ai:warm   # preload models so the first request isn't slow
+brew install ollama
+ollama serve
 ```
 
-**On an 8 GB Mac**, set `OLLAMA_CHAT_MODEL=llama3.2:3b` in `backend/.env` (skip the 8B pull) and lower Docker Desktop's memory limit to about 2 GB (Settings → Resources); the containers use well under 1 GB. Otherwise macOS swaps model memory out between calls and AI latency jumps from under a second to several seconds.
+Download the models:
 
-On a Linux host with a GPU you can use the bundled container instead: `docker compose --profile ollama up -d`, then set `OLLAMA_BASE_URL=http://ollama:11434` in `backend/.env`. Models and per-feature limits (model tier, temperature, max tokens) live in `backend/config/ai.php`.
+```bash
+ollama pull llama3.2:3b
+ollama pull llama3.1:8b
+ollama pull nomic-embed-text
+```
 
-- App: http://localhost:5173 (frontend) / http://localhost:8000/api (backend)
-- Demo logins (password `password` for all three): `admin@serviflow.test`, `technician@serviflow.test`, `customer@serviflow.test`
-- The seeder builds a real scenario through every pipeline stage for the demo technician/customer (a job mid-triage, one scheduled, one in progress with notes recorded, one completed-and-invoiced, one closed-with-review) plus 30 randomized filler requests — so every page has something real to show immediately, not an empty state.
+The models are used for different purposes:
 
-Run tests: `docker compose exec app vendor/bin/pest`
+| Model | Purpose |
+|---|---|
+| llama3.2:3b | Classification and technician ranking |
+| llama3.1:8b | Reports, knowledge base answers, and analytics explanations |
+| nomic-embed-text | Document embeddings and semantic search |
+
+Once the models are downloaded, run:
+
+```bash
+docker compose exec app php artisan ai:warm
+```
+
+This helps load the models before using the AI features for the first time.
+
+**For Macs with 8 GB RAM:**
+
+Running multiple models can use quite a lot of memory. If you're using an 8 GB Mac, you can set `OLLAMA_CHAT_MODEL=llama3.2:3b` in `backend/.env` and skip downloading the 8B model.
+
+You can also reduce Docker Desktop's memory allocation to around 2 GB to leave more memory available for Ollama.
+
+**For Linux with a GPU:**
+
+You can also run Ollama through the included Docker Compose profile:
+
+```bash
+docker compose --profile ollama up -d
+```
+
+Then update the Ollama URL in `backend/.env`:
+
+```env
+OLLAMA_BASE_URL=http://ollama:11434
+```
+
+AI model settings, including model selection, temperature, and token limits, can be found in:
+
+`backend/config/ai.php`
+
+### 7. Access the application
+
+Once everything is running, you can access the application here:
+
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:8000/api
+
+### Demo Accounts
+
+You can use the following accounts to explore the different user roles.
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | admin@serviflow.test | password |
+| Technician | technician@serviflow.test | password |
+| Customer | customer@serviflow.test | password |
+
+The database seeder also creates sample service requests at different stages of the workflow. This includes requests waiting for triage, scheduled jobs, ongoing work with recorded notes, completed jobs, and closed requests with customer reviews.
+
+It also generates 30 additional sample requests so the dashboard and other pages have data to display when you first open the application.
 
 ### Troubleshooting
 
-**`Failed to open stream: vendor/autoload.php`** on `key:generate`/`migrate`/etc. — the `app`/`queue` containers bind-mount `./backend` over `/var/www/html` for live code reload, which shadows the `vendor/` folder `composer install` created during the image build (an anonymous volume in `docker-compose.yml` now prevents this on a fresh build). If you hit this on an existing checkout, just run composer inside the container once — it installs straight into the mounted folder and persists to disk:
+**Error: `Failed to open stream: vendor/autoload.php`**
+
+If you encounter this error when running commands such as `key:generate` or `migrate`, it may be caused by the backend directory being mounted into the Docker container.
+
+The mounted directory can hide the `vendor` folder created during the Docker image build.
+
+To resolve this, run Composer inside the application container:
+
 ```bash
 docker compose exec app composer install
 ```
 
-## Repository layout
+This installs the dependencies directly into the mounted backend directory.
 
+## Project Structure
+
+The repository is organised into two main application directories, along with the Docker and CI configuration files.
+
+```text
+serviflow-ai/
+│
+├── backend/       Laravel API
+│   └── app/
+│       ├── Actions/
+│       ├── AI/
+│       ├── Http/
+│       ├── Jobs/
+│       ├── Models/
+│       └── Services/
+│
+├── frontend/      React + TypeScript application
+│
+├── docker/        Nginx and PostgreSQL configuration
+│
+└── .github/       GitHub Actions workflows
 ```
-backend/    Laravel API — see backend/app/{Actions,AI,Http,Jobs,Models,Services}
-frontend/   React + TypeScript SPA
-docker/     nginx + postgres init config
-.github/    CI workflows
-```
 
-## Why these choices
+## Why I Chose This Stack
 
-- **Laravel** — routing, validation, ORM, queues, policies, and testing for a real business application, without extra frameworks bolted on.
-- **PostgreSQL + pgvector** — one database for relational data *and* vector search; no separate vector store to operate.
-- **Ollama** — local inference, so the AI layer costs nothing to run and isn't tied to a vendor.
-- **Redis + Queues** — AI and document processing are slow and can fail; they run in the background so the HTTP request never blocks on an LLM call.
-- **AIProviderInterface** — business logic depends on an interface, not a vendor SDK. Swapping in OpenAI or Anthropic later is one new class + one line in `AIServiceProvider`.
-- **Human approval on every AI recommendation** — the AI ranks technicians and classifies tickets; Laravel validates and an admin approves before anything is written as final.
+I wanted to build the application using technologies that work well together without depending on expensive external services.
 
-## Production deployment
+A few reasons behind the choices:
 
-See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for free-tier hosting constraints (Ollama's memory footprint doesn't fit typical free web-service tiers), the persistent storage and long-running queue worker this app needs, and a full environment variable checklist.
+- **Laravel:** Handles the backend, API, authentication, validation, database operations, queues, and application rules.
+- **React + TypeScript:** Provides a component-based frontend with type checking to make the code easier to maintain.
+- **PostgreSQL + pgvector:** Allows me to store application data and document embeddings in the same database instead of maintaining a separate vector database.
+- **Ollama:** Makes it possible to run AI models locally without depending on paid AI API services.
+- **Redis:** Handles caching and background job processing.
+- **AI Provider Interface:** Keeps the AI integration separate from the main application logic, making it easier to add other providers such as OpenAI or Anthropic later.
+- **Pest:** Provides a straightforward way to test the application's workflows, business rules, and AI-related functionality.
+
+I also wanted to make sure that AI suggestions would not automatically change important business data. That's why the application uses validation, normal business rules, and admin approval for important decisions.
+
+## Deployment
+
+The deployment guide is available here:
+
+`docs/DEPLOYMENT.md`
+
+It covers the hosting requirements, environment variables, persistent storage, and queue worker configuration.
+
+One thing to consider before deploying is that locally hosted Ollama models require more memory and resources than typical free web hosting services provide. The application also needs persistent storage and long-running queue workers for its background processes.
+
