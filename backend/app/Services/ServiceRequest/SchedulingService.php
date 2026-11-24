@@ -38,22 +38,24 @@ class SchedulingService
 
         [$newStart, $newEnd] = $this->window($request->scheduled_at, $request->estimated_duration_minutes);
 
+        // One indexed EXISTS query instead of loading every active
+        // assignment into PHP (spec v2 section 10.4). Same rule as before:
+        // both windows include the travel buffer on each side, and they
+        // conflict when otherStart < newEnd AND otherEnd > newStart.
         return $technician->assignments()
             ->whereIn('status', ['assigned', 'started'])
             ->when($excludingRequestId, fn ($query) => $query->where('service_request_id', '!=', $excludingRequestId))
-            ->with('serviceRequest')
-            ->get()
-            ->contains(function ($assignment) use ($newStart, $newEnd) {
-                $other = $assignment->serviceRequest;
-
-                if (! $other || ! $other->scheduled_at) {
-                    return false;
-                }
-
-                [$otherStart, $otherEnd] = $this->window($other->scheduled_at, $other->estimated_duration_minutes);
-
-                return $otherStart->lt($newEnd) && $otherEnd->gt($newStart);
-            });
+            ->whereHas('serviceRequest', fn ($query) => $query
+                ->whereNotNull('scheduled_at')
+                ->whereRaw(
+                    'scheduled_at - make_interval(mins => ?) < ?',
+                    [self::TRAVEL_BUFFER_MINUTES, $newEnd]
+                )
+                ->whereRaw(
+                    'scheduled_at + make_interval(mins => COALESCE(estimated_duration_minutes, ?) + ?) > ?',
+                    [self::DEFAULT_DURATION_MINUTES, self::TRAVEL_BUFFER_MINUTES, $newStart]
+                ))
+            ->exists();
     }
 
     /**
