@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useServiceRequests, useCreateServiceRequest } from '../hooks/useServiceRequests'
 import { StatusBadge, PriorityLabel } from '../components/StatusBadge'
 import { useAuth } from '../hooks/useAuth'
+import { apiErrorMessage } from '../utils/errors'
 
 export default function ServiceRequestsList() {
   const { user } = useAuth()
@@ -93,8 +94,8 @@ function NewRequestForm({ onDone }: { onDone: () => void }) {
       await create.mutateAsync({ service_type: serviceType, description })
       setDescription('')
       onDone()
-    } catch (err: any) {
-      setError(err?.response?.data?.errors?.description?.[0] ?? 'Could not submit this request. Please try again.')
+    } catch (err) {
+      setError(apiErrorMessage(err, 'description', 'Could not submit this request. Please try again.'))
     }
   }
 

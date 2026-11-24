@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTechnicians, useTechnician, useUpdateTechnicianStatus } from '../hooks/useTechnicians'
 import { StatusBadge } from '../components/StatusBadge'
+import { apiErrorMessage } from '../utils/errors'
 
 const STATUS_OPTIONS = ['', 'available', 'on_job', 'off_duty']
 
@@ -95,7 +96,7 @@ function TechnicianDetail({ id }: { id: number }) {
     setError(null)
     updateStatus.mutate(
       { id, status: next },
-      { onError: (err: any) => setError(err?.response?.data?.errors?.status?.[0] ?? 'Could not update status.') },
+      { onError: (err) => setError(apiErrorMessage(err, 'status', 'Could not update status.')) },
     )
   }
 

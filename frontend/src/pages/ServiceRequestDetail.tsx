@@ -18,13 +18,11 @@ import { StatusBadge, PriorityLabel } from '../components/StatusBadge'
 import { AiBadge } from '../components/AiBadge'
 import { useAuth } from '../hooks/useAuth'
 import type { ServiceRequest, Priority } from '../types'
+import { apiErrorMessage } from '../utils/errors'
 
 const CATEGORIES = ['air_conditioning', 'plumbing', 'electrical', 'appliance_repair', 'pest_control', 'general_maintenance', 'other']
 const PRIORITIES = ['low', 'medium', 'high', 'critical']
 
-function errorMessage(err: any, field: string, fallback: string) {
-  return err?.response?.data?.errors?.[field]?.[0] ?? err?.response?.data?.message ?? fallback
-}
 
 export default function ServiceRequestDetail() {
   const { id } = useParams()
@@ -97,14 +95,14 @@ export default function ServiceRequestDetail() {
     if (!scheduledAt) return
     setScheduleError(null)
     schedule.mutate(new Date(scheduledAt).toISOString(), {
-      onError: (err: any) => setScheduleError(errorMessage(err, 'scheduled_at', 'Could not schedule this appointment.')),
+      onError: (err) => setScheduleError(apiErrorMessage(err, 'scheduled_at', 'Could not schedule this appointment.')),
     })
   }
 
   function handleStart() {
     setStartError(null)
     start.mutate(undefined, {
-      onError: (err: any) => setStartError(errorMessage(err, 'status', 'Could not start this job.')),
+      onError: (err) => setStartError(apiErrorMessage(err, 'status', 'Could not start this job.')),
     })
   }
 
@@ -113,7 +111,7 @@ export default function ServiceRequestDetail() {
     setWorkflowError(null)
     upsertNote.mutate(
       { rawNotes, photoPaths },
-      { onError: (err: any) => setWorkflowError(errorMessage(err, 'raw_notes', 'Could not save notes.')) },
+      { onError: (err) => setWorkflowError(apiErrorMessage(err, 'raw_notes', 'Could not save notes.')) },
     )
   }
 
@@ -125,9 +123,9 @@ export default function ServiceRequestDetail() {
     setFinalReport('')
     generateReport.mutate((text) => setFinalReport((current) => current + text), {
       onSuccess: (saved) => setFinalReport(saved.ai_generated_report ?? ''),
-      onError: (err: any) => {
+      onError: (err) => {
         setFinalReport(previous)
-        setWorkflowError(err?.message ?? errorMessage(err, 'raw_notes', 'Could not generate a report.'))
+        setWorkflowError(apiErrorMessage(err, 'raw_notes', 'Could not generate a report.'))
       },
     })
   }
@@ -136,14 +134,14 @@ export default function ServiceRequestDetail() {
     if (!finalReport.trim()) return
     setWorkflowError(null)
     finalizeReport.mutate(finalReport, {
-      onError: (err: any) => setWorkflowError(errorMessage(err, 'final_report', 'Could not finalize this report.')),
+      onError: (err) => setWorkflowError(apiErrorMessage(err, 'final_report', 'Could not finalize this report.')),
     })
   }
 
   function handleComplete() {
     setWorkflowError(null)
     completeJob.mutate(undefined, {
-      onError: (err: any) => setWorkflowError(errorMessage(err, 'status', 'Could not complete this job.')),
+      onError: (err) => setWorkflowError(apiErrorMessage(err, 'status', 'Could not complete this job.')),
     })
   }
 
@@ -152,7 +150,7 @@ export default function ServiceRequestDetail() {
     setReviewError(null)
     submitReview.mutate(
       { rating, comment: reviewComment.trim() || undefined },
-      { onError: (err: any) => setReviewError(errorMessage(err, 'rating', 'Could not submit your review.')) },
+      { onError: (err) => setReviewError(apiErrorMessage(err, 'rating', 'Could not submit your review.')) },
     )
   }
 
@@ -163,28 +161,28 @@ export default function ServiceRequestDetail() {
     setInvoiceError(null)
     saveInvoiceDraft.mutate(
       { laborCost: labor, partsCost: parts },
-      { onError: (err: any) => setInvoiceError(errorMessage(err, 'labor_cost', 'Could not save this invoice.')) },
+      { onError: (err) => setInvoiceError(apiErrorMessage(err, 'labor_cost', 'Could not save this invoice.')) },
     )
   }
 
   function handleIssueInvoice() {
     setInvoiceError(null)
     issueInvoice.mutate(undefined, {
-      onError: (err: any) => setInvoiceError(errorMessage(err, 'status', 'Could not issue this invoice.')),
+      onError: (err) => setInvoiceError(apiErrorMessage(err, 'status', 'Could not issue this invoice.')),
     })
   }
 
   function handlePayInvoice() {
     setInvoiceError(null)
     payInvoice.mutate(undefined, {
-      onError: (err: any) => setInvoiceError(errorMessage(err, 'status', 'Could not mark this invoice paid.')),
+      onError: (err) => setInvoiceError(apiErrorMessage(err, 'status', 'Could not mark this invoice paid.')),
     })
   }
 
   function handleCancelInvoice() {
     setInvoiceError(null)
     cancelInvoice.mutate(undefined, {
-      onError: (err: any) => setInvoiceError(errorMessage(err, 'status', 'Could not cancel this invoice.')),
+      onError: (err) => setInvoiceError(apiErrorMessage(err, 'status', 'Could not cancel this invoice.')),
     })
   }
 
@@ -222,7 +220,7 @@ export default function ServiceRequestDetail() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
             <Field label="Category" value={request.category ?? request.ai_analysis?.category} />
             <Field label="Priority">
-              <PriorityLabel priority={(request.priority ?? request.ai_analysis?.priority) as any} />
+              <PriorityLabel priority={(request.priority ?? request.ai_analysis?.priority ?? null) as Priority | null} />
             </Field>
             <Field label="Est. duration" value={`${request.estimated_duration_minutes ?? request.ai_analysis?.estimated_duration_minutes} min`} />
             <Field label="Required skill" value={request.required_skill ?? request.ai_analysis?.required_skill} />
@@ -592,7 +590,7 @@ function TriageForm({ request, requestId }: { request: ServiceRequest; requestId
     setError(null)
     review.mutate(
       { category, priority, required_skill: requiredSkill.trim(), estimated_duration_minutes: duration },
-      { onError: (err: any) => setError(errorMessage(err, 'required_skill', 'Could not save triage.')) },
+      { onError: (err) => setError(apiErrorMessage(err, 'required_skill', 'Could not save triage.')) },
     )
   }
 

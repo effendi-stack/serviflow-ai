@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { askKnowledgeBaseStream } from '../services/knowledge'
+import { apiErrorMessage } from '../utils/errors'
 import { useDocuments, useUploadDocument, useDeleteDocument, useReindexDocument } from '../hooks/useKnowledge'
 import { useAuth } from '../hooks/useAuth'
 import { AiBadge } from '../components/AiBadge'
@@ -38,8 +39,8 @@ export default function KnowledgeAssistant() {
       // replaces it and adds the sources.
       const answer = await ask.mutateAsync(asked)
       setHistory((h) => [...h, { question: asked, answer }])
-    } catch (err: any) {
-      setError(err?.message ?? 'Could not reach the knowledge assistant.')
+    } catch (err) {
+      setError(apiErrorMessage(err, null, 'Could not reach the knowledge assistant.'))
       setQuestion(asked)
     } finally {
       setPending(null)
@@ -135,7 +136,7 @@ function DocumentManager() {
           setTitle('')
           setFile(null)
         },
-        onError: (err: any) => setError(err?.response?.data?.message ?? 'Could not upload this document.'),
+        onError: (err) => setError(apiErrorMessage(err, 'file', 'Could not upload this document.')),
       },
     )
   }
