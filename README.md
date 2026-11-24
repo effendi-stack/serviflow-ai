@@ -110,6 +110,8 @@ ollama pull nomic-embed-text               # embeddings
 docker compose exec app php artisan ai:warm   # preload models so the first request isn't slow
 ```
 
+**On an 8 GB Mac**, set `OLLAMA_CHAT_MODEL=llama3.2:3b` in `backend/.env` (skip the 8B pull) and lower Docker Desktop's memory limit to about 2 GB (Settings → Resources); the containers use well under 1 GB. Otherwise macOS swaps model memory out between calls and AI latency jumps from under a second to several seconds.
+
 On a Linux host with a GPU you can use the bundled container instead: `docker compose --profile ollama up -d`, then set `OLLAMA_BASE_URL=http://ollama:11434` in `backend/.env`. Models and per-feature limits (model tier, temperature, max tokens) live in `backend/config/ai.php`.
 
 - App: http://localhost:5173 (frontend) / http://localhost:8000/api (backend)

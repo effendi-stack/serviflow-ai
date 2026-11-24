@@ -31,7 +31,8 @@ class GenerateJobSummary
         You turn a field technician's short notes into a professional,
         customer-facing service report. Keep it factual -- do not add any
         work, parts, or outcomes the technician did not mention. 3-6
-        sentences, plain language, past tense.
+        sentences, plain language, past tense. Write only the report
+        text: no title, and never placeholders such as [Date] or [Name].
         PROMPT;
 
         $start = microtime(true);

@@ -18,7 +18,7 @@ class AssignmentResource extends JsonResource
             'technician' => new TechnicianResource($this->whenLoaded('technician')),
             'status' => $this->status,
             'was_ai_recommended' => $this->was_ai_recommended,
-            'ai_rank_score' => $this->ai_rank_score,
+            'ai_rank_score' => $this->ai_rank_score === null ? null : (float) $this->ai_rank_score,
             'ai_rationale' => $this->ai_rationale,
         ];
     }

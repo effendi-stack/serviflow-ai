@@ -58,3 +58,21 @@ it('rejects double-booking a technician for an overlapping scheduled time', func
     expect(fn () => app(AssignTechnician::class)->execute($overlapping, $technician))
         ->toThrow(RuntimeException::class);
 });
+
+it('returns the AI rank score as a number, not a decimal string', function () {
+    $admin = User::factory()->admin()->create();
+    $technician = Technician::factory()->create(['skills' => ['ac_repair']]);
+    $request = ServiceRequest::factory()->create([
+        'status' => ServiceRequest::STATUS_READY_FOR_ASSIGNMENT,
+        'required_skill' => 'ac_repair',
+    ]);
+
+    $this->actingAs($admin);
+    app(AssignTechnician::class)->execute($request, $technician, wasAiRecommended: true, aiScore: 87.5, aiRationale: 'Closest with the right skill.');
+
+    // Postgres returns decimal columns as strings; the frontend calls
+    // toFixed() on this value, so a string crashed the request page.
+    $score = $this->getJson("/api/service-requests/{$request->id}")->json('data.assignment.ai_rank_score');
+
+    expect($score)->toBe(87.5);
+});
